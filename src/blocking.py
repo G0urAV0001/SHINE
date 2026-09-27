@@ -211,6 +211,8 @@ def generate_blocked_pairs(con):
     print("  2. Exact normalized address")
     print("  3. Country + name prefix")
     print("  4. Country + address number")
+    print("  5. Country + sorted name tokens")
+    print("  6. Country + address without house number")
     print()
 
     query = f"""
@@ -240,7 +242,20 @@ def generate_blocked_pairs(con):
             coalesce(
                 regexp_extract(address_clean, '(\\d+)', 1),
                 ''
-            ) AS address_number
+            ) AS address_number,
+
+            country_clean || '|' ||
+            array_to_string(
+                list_sort(
+                    string_split(name_clean, ' ')
+                ),
+                ''
+            ) AS name_sorted,
+
+            country_clean || '|' ||
+            trim(
+                regexp_replace(address_clean, '\\d+', '', 'g')
+            ) AS address_no_number
 
         FROM s1
     ),
@@ -268,7 +283,20 @@ def generate_blocked_pairs(con):
             coalesce(
                 regexp_extract(address_clean, '(\\d+)', 1),
                 ''
-            ) AS address_number
+            ) AS address_number,
+
+            country_clean || '|' ||
+            array_to_string(
+                list_sort(
+                    string_split(name_clean, ' ')
+                ),
+                ''
+            ) AS name_sorted,
+
+            country_clean || '|' ||
+            trim(
+                regexp_replace(address_clean, '\\d+', '', 'g')
+            ) AS address_no_number
 
         FROM s2
     ),
@@ -296,146 +324,120 @@ def generate_blocked_pairs(con):
             coalesce(
                 regexp_extract(address_clean, '(\\d+)', 1),
                 ''
-            ) AS address_number
+            ) AS address_number,
+
+            country_clean || '|' ||
+            array_to_string(
+                list_sort(
+                    string_split(name_clean, ' ')
+                ),
+                ''
+            ) AS name_sorted,
+
+            country_clean || '|' ||
+            trim(
+                regexp_replace(address_clean, '\\d+', '', 'g')
+            ) AS address_no_number
 
         FROM s3
     ),
 
     -------------------------------------------------------
     -- SOURCE 2 NAME BLOCK
-    -- Ignore extremely common names.
     -------------------------------------------------------
 
     s2_name AS (
-        SELECT
-            name_clean,
-            country_clean,
-            candidate_entity_id
+        SELECT name_clean, country_clean, candidate_entity_id
         FROM s2_keys
         WHERE name_clean <> ''
-        QUALIFY
-            count(*) OVER (
-                PARTITION BY country_clean, name_clean
-            ) <= 100
+        QUALIFY count(*) OVER (PARTITION BY country_clean, name_clean) <= 100
     ),
-
-    -------------------------------------------------------
-    -- SOURCE 3 NAME BLOCK
-    -------------------------------------------------------
 
     s3_name AS (
-        SELECT
-            name_clean,
-            country_clean,
-            candidate_entity_id
+        SELECT name_clean, country_clean, candidate_entity_id
         FROM s3_keys
         WHERE name_clean <> ''
-        QUALIFY
-            count(*) OVER (
-                PARTITION BY country_clean, name_clean
-            ) <= 100
+        QUALIFY count(*) OVER (PARTITION BY country_clean, name_clean) <= 100
     ),
-
-    -------------------------------------------------------
-    -- SOURCE 2 ADDRESS BLOCK
-    -------------------------------------------------------
 
     s2_address AS (
-        SELECT
-            address_clean,
-            country_clean,
-            candidate_entity_id
+        SELECT address_clean, country_clean, candidate_entity_id
         FROM s2_keys
         WHERE address_clean <> ''
-        QUALIFY
-            count(*) OVER (
-                PARTITION BY country_clean, address_clean
-            ) <= 100
+        QUALIFY count(*) OVER (PARTITION BY country_clean, address_clean) <= 100
     ),
-
-    -------------------------------------------------------
-    -- SOURCE 3 ADDRESS BLOCK
-    -------------------------------------------------------
 
     s3_address AS (
-        SELECT
-            address_clean,
-            country_clean,
-            candidate_entity_id
+        SELECT address_clean, country_clean, candidate_entity_id
         FROM s3_keys
         WHERE address_clean <> ''
-        QUALIFY
-            count(*) OVER (
-                PARTITION BY country_clean, address_clean
-            ) <= 100
+        QUALIFY count(*) OVER (PARTITION BY country_clean, address_clean) <= 100
     ),
-
-    -------------------------------------------------------
-    -- SOURCE 2 NAME PREFIX BLOCK
-    -------------------------------------------------------
 
     s2_prefix AS (
-        SELECT
-            name_prefix,
-            candidate_entity_id
+        SELECT name_prefix, candidate_entity_id
         FROM s2_keys
-        WHERE
-            length(split_part(name_prefix, '|', 2)) >= 4
-        QUALIFY
-            count(*) OVER (
-                PARTITION BY name_prefix
-            ) <= 50
+        WHERE length(split_part(name_prefix, '|', 2)) >= 4
+        QUALIFY count(*) OVER (PARTITION BY name_prefix) <= 50
     ),
-
-    -------------------------------------------------------
-    -- SOURCE 3 NAME PREFIX BLOCK
-    -------------------------------------------------------
 
     s3_prefix AS (
-        SELECT
-            name_prefix,
-            candidate_entity_id
+        SELECT name_prefix, candidate_entity_id
         FROM s3_keys
-        WHERE
-            length(split_part(name_prefix, '|', 2)) >= 4
-        QUALIFY
-            count(*) OVER (
-                PARTITION BY name_prefix
-            ) <= 50
+        WHERE length(split_part(name_prefix, '|', 2)) >= 4
+        QUALIFY count(*) OVER (PARTITION BY name_prefix) <= 50
     ),
-
-    -------------------------------------------------------
-    -- SOURCE 2 ADDRESS NUMBER BLOCK
-    -------------------------------------------------------
 
     s2_number AS (
-        SELECT
-            address_number,
-            candidate_entity_id
+        SELECT address_number, candidate_entity_id
         FROM s2_keys
-        WHERE
-            length(split_part(address_number, '|', 2)) >= 2
-        QUALIFY
-            count(*) OVER (
-                PARTITION BY address_number
-            ) <= 50
+        WHERE length(split_part(address_number, '|', 2)) >= 2
+        QUALIFY count(*) OVER (PARTITION BY address_number) <= 50
+    ),
+
+    s3_number AS (
+        SELECT address_number, candidate_entity_id
+        FROM s3_keys
+        WHERE length(split_part(address_number, '|', 2)) >= 2
+        QUALIFY count(*) OVER (PARTITION BY address_number) <= 50
     ),
 
     -------------------------------------------------------
-    -- SOURCE 3 ADDRESS NUMBER BLOCK
+    -- NEW: SORTED NAME TOKEN BLOCK
+    -- Catches word-order swaps (e.g. "Fils Grain" vs "Grain Fils")
     -------------------------------------------------------
 
-    s3_number AS (
-        SELECT
-            address_number,
-            candidate_entity_id
+    s2_name_sorted AS (
+        SELECT name_sorted, candidate_entity_id
+        FROM s2_keys
+        WHERE length(split_part(name_sorted, '|', 2)) >= 4
+        QUALIFY count(*) OVER (PARTITION BY name_sorted) <= 50
+    ),
+
+    s3_name_sorted AS (
+        SELECT name_sorted, candidate_entity_id
         FROM s3_keys
-        WHERE
-            length(split_part(address_number, '|', 2)) >= 2
-        QUALIFY
-            count(*) OVER (
-                PARTITION BY address_number
-            ) <= 50
+        WHERE length(split_part(name_sorted, '|', 2)) >= 4
+        QUALIFY count(*) OVER (PARTITION BY name_sorted) <= 50
+    ),
+
+    -------------------------------------------------------
+    -- NEW: ADDRESS WITHOUT HOUSE NUMBER BLOCK
+    -- Catches reformatted / missing house numbers
+    -------------------------------------------------------
+
+    s2_street AS (
+        SELECT address_no_number, candidate_entity_id
+        FROM s2_keys
+        WHERE length(split_part(address_no_number, '|', 2)) >= 6
+        QUALIFY count(*) OVER (PARTITION BY address_no_number) <= 50
+    ),
+
+    s3_street AS (
+        SELECT address_no_number, candidate_entity_id
+        FROM s3_keys
+        WHERE length(split_part(address_no_number, '|', 2)) >= 6
+        QUALIFY count(*) OVER (PARTITION BY address_no_number) <= 50
     ),
 
     -------------------------------------------------------
@@ -444,97 +446,77 @@ def generate_blocked_pairs(con):
 
     candidates AS (
 
-        -- Exact name: Source 2
-        SELECT
-            s1.source1_entity_id,
-            s2.candidate_entity_id
-        FROM s1_keys s1
-        JOIN s2_name s2
-          ON s1.name_clean = s2.name_clean
-         AND s1.country_clean = s2.country_clean
+        SELECT s1.source1_entity_id, s2.candidate_entity_id
+        FROM s1_keys s1 JOIN s2_name s2
+          ON s1.name_clean = s2.name_clean AND s1.country_clean = s2.country_clean
 
         UNION
 
-        -- Exact name: Source 3
-        SELECT
-            s1.source1_entity_id,
-            s3.candidate_entity_id
-        FROM s1_keys s1
-        JOIN s3_name s3
-          ON s1.name_clean = s3.name_clean
-         AND s1.country_clean = s3.country_clean
+        SELECT s1.source1_entity_id, s3.candidate_entity_id
+        FROM s1_keys s1 JOIN s3_name s3
+          ON s1.name_clean = s3.name_clean AND s1.country_clean = s3.country_clean
 
         UNION
 
-        -- Exact address: Source 2
-        SELECT
-            s1.source1_entity_id,
-            s2.candidate_entity_id
-        FROM s1_keys s1
-        JOIN s2_address s2
-          ON s1.address_clean = s2.address_clean
-         AND s1.country_clean = s2.country_clean
+        SELECT s1.source1_entity_id, s2.candidate_entity_id
+        FROM s1_keys s1 JOIN s2_address s2
+          ON s1.address_clean = s2.address_clean AND s1.country_clean = s2.country_clean
 
         UNION
 
-        -- Exact address: Source 3
-        SELECT
-            s1.source1_entity_id,
-            s3.candidate_entity_id
-        FROM s1_keys s1
-        JOIN s3_address s3
-          ON s1.address_clean = s3.address_clean
-         AND s1.country_clean = s3.country_clean
+        SELECT s1.source1_entity_id, s3.candidate_entity_id
+        FROM s1_keys s1 JOIN s3_address s3
+          ON s1.address_clean = s3.address_clean AND s1.country_clean = s3.country_clean
 
         UNION
 
-        -- Name prefix: Source 2
-        SELECT
-            s1.source1_entity_id,
-            s2.candidate_entity_id
-        FROM s1_keys s1
-        JOIN s2_prefix s2
+        SELECT s1.source1_entity_id, s2.candidate_entity_id
+        FROM s1_keys s1 JOIN s2_prefix s2
           ON s1.name_prefix = s2.name_prefix
 
         UNION
 
-        -- Name prefix: Source 3
-        SELECT
-            s1.source1_entity_id,
-            s3.candidate_entity_id
-        FROM s1_keys s1
-        JOIN s3_prefix s3
+        SELECT s1.source1_entity_id, s3.candidate_entity_id
+        FROM s1_keys s1 JOIN s3_prefix s3
           ON s1.name_prefix = s3.name_prefix
 
         UNION
 
-        -- Address number: Source 2
-        SELECT
-            s1.source1_entity_id,
-            s2.candidate_entity_id
-        FROM s1_keys s1
-        JOIN s2_number s2
+        SELECT s1.source1_entity_id, s2.candidate_entity_id
+        FROM s1_keys s1 JOIN s2_number s2
           ON s1.address_number = s2.address_number
-         AND s1.country_clean = split_part(
-                s2.address_number,
-                '|',
-                1
-             )
+         AND s1.country_clean = split_part(s2.address_number, '|', 1)
 
         UNION
 
-        -- Address number: Source 3
-        SELECT
-            s1.source1_entity_id,
-            s3.candidate_entity_id
-        FROM s1_keys s1
-        JOIN s3_number s3
+        SELECT s1.source1_entity_id, s3.candidate_entity_id
+        FROM s1_keys s1 JOIN s3_number s3
           ON s1.address_number = s3.address_number
-         AND s1.country_clean = split_part(
-                s3.address_number,
-                '|',
-                1
-             )
+         AND s1.country_clean = split_part(s3.address_number, '|', 1)
+
+        UNION
+
+        SELECT s1.source1_entity_id, s2.candidate_entity_id
+        FROM s1_keys s1 JOIN s2_name_sorted s2
+          ON s1.name_sorted = s2.name_sorted
+
+        UNION
+
+        SELECT s1.source1_entity_id, s3.candidate_entity_id
+        FROM s1_keys s1 JOIN s3_name_sorted s3
+          ON s1.name_sorted = s3.name_sorted
+
+        UNION
+
+        SELECT s1.source1_entity_id, s2.candidate_entity_id
+        FROM s1_keys s1 JOIN s2_street s2
+          ON s1.address_no_number = s2.address_no_number
+
+        UNION
+
+        SELECT s1.source1_entity_id, s3.candidate_entity_id
+        FROM s1_keys s1 JOIN s3_street s3
+          ON s1.address_no_number = s3.address_no_number
     )
 
     SELECT DISTINCT
@@ -544,8 +526,6 @@ def generate_blocked_pairs(con):
     """
 
     return query
-
-
 # =========================================================
 # TRAINING CANDIDATES
 # =========================================================

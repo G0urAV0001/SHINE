@@ -2,7 +2,7 @@ import csv
 import joblib
 import numpy as np
 import pandas as pd
-
+import unicodedata
 from pathlib import Path
 from rapidfuzz import fuzz
 
@@ -38,14 +38,20 @@ CHUNK_SIZE = 50_000
 # TEXT
 # =========================================================
 
+import unicodedata
+
 def clean_text(value):
 
     if pd.isna(value):
         return ""
 
-    return str(value).lower().strip()
+    value = str(value).lower().strip()
 
+    # Strip accents (é -> e, ç -> c, etc.)
+    value = unicodedata.normalize('NFKD', value)
+    value = ''.join(c for c in value if not unicodedata.combining(c))
 
+    return value
 # =========================================================
 # FEATURES
 # =========================================================

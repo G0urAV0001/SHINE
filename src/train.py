@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import joblib
-
+import unicodedata
 from pathlib import Path
 from rapidfuzz import fuzz
 
@@ -36,9 +36,11 @@ def clean_text(value):
 
     value = str(value).lower().strip()
 
+    # Strip accents (é -> e, ç -> c, etc.)
+    value = unicodedata.normalize('NFKD', value)
+    value = ''.join(c for c in value if not unicodedata.combining(c))
+
     return value
-
-
 # =========================================================
 # FEATURE CALCULATION
 # =========================================================
