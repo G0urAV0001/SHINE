@@ -29,6 +29,8 @@ The solution follows a multi-stage entity-resolution pipeline:
 
 The pipeline is designed to reduce the number of comparisons while preserving likely matches.
 
+During development, blocking recall was measured directly against held-out validation ground truth (bypassing any ground-truth-assisted candidate injection used only for training-sample construction). This measurement showed the initial blocking strategy recovered only about 54% of true matches. Two additional blocking rules were added to address this gap (see Section 4), raising measured recall to approximately 58%. This diagnostic step was key to understanding that candidate-generation recall, not model quality, was the primary limiting factor on end-to-end performance.
+
 ---
 
 ## 3. Data Preprocessing
@@ -77,22 +79,24 @@ The blocking strategy uses combinations of:
 
 - exact normalized business name within country
 - exact normalized address within country
-- country plus a normalized business-name prefix
+- country plus a normalized business-name prefix (first 6 characters)
 - country plus address number
+- **country plus sorted name tokens** — catches word-order variation (e.g. "Grain Fils" vs "Fils Grain") by sorting the normalized name's tokens alphabetically before keying
+- **country plus address with house number stripped** — catches cases where the same street/locality matches but house numbers are missing, reformatted, or landmark-based
 
-Large blocks are capped to prevent extremely common values from generating excessive candidate pairs.
+Large blocks are capped (per-key candidate limits) to prevent extremely common values from generating excessive candidate pairs and to keep the candidate set close to the recall/size tradeoff the challenge rewards.
 
 DuckDB is used for scalable processing of the large TSV datasets.
 
-The final test candidate file contains one row for every Source 1 test entity.
+The final test candidate file contains one row for every Source 1 test entity. The test candidate set totals approximately 43.2 million pairs after the two additional blocking rules were added (up from approximately 35.9 million with the original four rules).
 
 ---
 
 ## 5. Training Data
 
-Training candidates are generated from the blocking process and augmented with known positive pairs from the provided ground-truth data.
+Training candidates are generated from the blocking process and augmented with known positive pairs from the provided ground-truth data, so that training positives are not lost due to blocking misses.
 
-A balanced sample of positive and negative candidate pairs is used for model training to make the training process computationally manageable while retaining both classes.
+A balanced sample of positive and negative candidate pairs (~530,000 pairs total) is used for model training to make the training process computationally manageable while retaining both classes.
 
 No external business data or external entity lookup is used.
 
@@ -102,12 +106,8 @@ No external business data or external entity lookup is used.
 
 For each candidate pair, the following features are calculated:
 
-- business-name similarity
-- business-name token similarity
-- business-name partial similarity
-- address similarity
-- address token similarity
-- address partial similarity
+- business-name similarity (ratio, token-set ratio, partial ratio)
+- address similarity (ratio, token-set ratio, partial ratio)
 - country match
 - normalized business-name length difference
 - normalized address length difference
@@ -115,6 +115,8 @@ For each candidate pair, the following features are calculated:
 - address token-count difference
 
 RapidFuzz is used for efficient fuzzy string similarity calculations.
+
+Feature importance from the trained model shows address-based features (address token-set ratio, address partial ratio, address ratio) as the strongest predictors, followed by name-based features.
 
 ---
 
@@ -140,11 +142,13 @@ The training/validation split is grouped by Source 1 entity so that records belo
 
 The trained model produces a match probability for each candidate pair.
 
+Threshold selection was performed at the **entity level** rather than the pair level, since the competition scores F0.5 per Source 1 entity (comparing the full predicted match list against the full true match list) and then macro-averages across entities. A pair-level threshold sweep does not necessarily select the threshold that maximizes this entity-level metric, so a dedicated entity-level sweep was run across the held-out validation split, grouping predictions by Source 1 entity and computing true entity-level F0.5 at each candidate threshold.
+
 A decision threshold of:
 
-`0.76`
+`0.92`
 
-is used for the final prediction pipeline.
+was selected as the final prediction threshold, based on this entity-level sweep.
 
 Candidate pairs with predicted probability at or above the threshold are retained as matches.
 
@@ -157,9 +161,9 @@ The trained model is applied to the test candidate pairs.
 The final prediction produced:
 
 - Source 1 test entities: 1,732,544
-- Entities with predicted matches: 1,378,868
-- Entities without predicted matches: 353,676
-- Total predicted matches: 4,444,586
+- Entities with predicted matches: 1,404,739
+- Entities without predicted matches: 327,805
+- Total predicted matches: 4,190,000
 
 Each Source 1 entity appears exactly once in the final result.
 
@@ -185,7 +189,7 @@ Contains:
 - `source1_entity_id`
 - `candidate_entity_ids`
 
-The candidate file represents the candidate set supplied to the matching model.
+The candidate file represents the candidate set supplied to the matching model, using the final blocking strategy described in Section 4.
 
 ---
 
@@ -246,3 +250,17 @@ Important scripts include:
 - `validate_submission.py`
 
 The trained model is generated during the training stage and the final prediction stage produces the required output files.
+
+---
+
+## 14. Iteration Summary
+
+The solution was developed iteratively, with each stage informed by direct measurement rather than assumption:
+
+1. Initial pipeline built with four blocking rules, a Random Forest classifier, and a pair-level threshold.
+2. Leaderboard score (0.585) was found to be significantly below the pair-level validation F0.5, prompting investigation.
+3. An entity-level evaluation script was built to measure F0.5 the same way the competition scores it (per-entity list comparison, macro-averaged), rather than per-pair classification accuracy. This raised the effective threshold to 0.93 and improved the leaderboard score to 0.608.
+4. Direct measurement of blocking recall against held-out ground truth (bypassing ground-truth-assisted candidate injection) revealed that only ~54% of true matches were reachable by the original blocking rules — identifying candidate generation, not model quality, as the primary bottleneck.
+5. Two additional blocking rules (sorted name tokens, address without house number) were added, raising measured blocking recall to ~58% and growing the test candidate set from ~35.9M to ~43.2M pairs. The model was retrained and re-thresholded (0.92) on the expanded candidate pool, improving the leaderboard score to 0.636.
+
+This progression highlights that for this challenge, candidate-generation recall is the dominant lever on final score, ahead of both model architecture and decision threshold — consistent with the problem statement's guidance that blocking strategy determines the recall ceiling for the entire pipeline.
