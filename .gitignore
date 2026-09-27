@@ -1,0 +1,14 @@
+# Large data files - too big for GitHub
+data/
+output/training_candidate_pairs.tsv
+output/candidate_pairs.tsv
+output/training_sample.tsv
+submission/output/candidate_pairs.tsv
+Shine_submission.zip
+
+# Model files (optional - remove this line if you want to keep entity_matcher.pkl)
+models/*.pkl
+
+# Python cache
+__pycache__/
+*.pyc
